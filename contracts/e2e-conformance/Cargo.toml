@@ -1,0 +1,17 @@
+[package]
+name = "e2e-conformance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { version = "25.3.0", features = ["testutils"] }
+soroban-launchpad = { path = "../launchpad", features = ["testutils"] }
+soroban-marketplace = { path = "../soroban-marketplace", features = ["testutils"] }
+
+[dev-dependencies]
+soroban-sdk = { version = "25.3.0", features = ["testutils"] }

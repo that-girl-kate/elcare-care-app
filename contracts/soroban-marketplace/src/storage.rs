@@ -290,6 +290,9 @@ pub enum DataKey {
     /// Keyed by (settlement_id, is_listing, recipient_address).
     /// Written at settlement, marked claimed after successful payout.
     RoyaltyClaim(u64, bool, Address),
+    /// Ordered index of claim refs for a recipient (Issue #842).
+    /// Enables `get_unclaimed_royalties` pagination without a full scan.
+    RecipientRoyaltyIndex(Address),
     /// Parent offer ID for a counter-offer (Issue #471).
     /// `CounterOfferParent(counter_offer_id)` → parent_offer_id.
     CounterOfferParent(u64),
@@ -2207,10 +2210,15 @@ pub fn set_royalty_claim(
     record: &crate::types::RoyaltyClaimRecord,
 ) {
     let key = DataKey::RoyaltyClaim(settlement_id, is_listing, recipient.clone());
+    let is_new = !env.storage().persistent().has(&key);
     env.storage().persistent().set(&key, record);
     env.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_TTL_THRESHOLD, OFFER_TTL_LEDGERS);
+    // Index new claims under the recipient so get_unclaimed_royalties can paginate.
+    if is_new {
+        append_recipient_royalty_ref(env, recipient, settlement_id, is_listing);
+    }
 }
 
 pub fn get_royalty_claim(
@@ -2228,6 +2236,64 @@ pub fn get_royalty_claim(
         bump_entry_ttl(env, &key);
     }
     value
+}
+
+fn append_recipient_royalty_ref(
+    env: &Env,
+    recipient: &Address,
+    settlement_id: u64,
+    is_listing: bool,
+) {
+    let key = DataKey::RecipientRoyaltyIndex(recipient.clone());
+    let mut index: soroban_sdk::Vec<crate::types::RoyaltyClaimRef> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    index.push_back(crate::types::RoyaltyClaimRef {
+        settlement_id,
+        is_listing,
+    });
+    env.storage().persistent().set(&key, &index);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_TTL_THRESHOLD, OFFER_TTL_LEDGERS);
+}
+
+/// Paginate unclaimed royalty records for `recipient` (Issue #842).
+///
+/// Walks the recipient index from `start` for up to `limit` entries and returns
+/// only those whose stored claim has `claimed == false`.
+pub fn get_unclaimed_royalties(
+    env: &Env,
+    recipient: &Address,
+    start: u32,
+    limit: u32,
+) -> soroban_sdk::Vec<crate::types::RoyaltyClaimRecord> {
+    let key = DataKey::RecipientRoyaltyIndex(recipient.clone());
+    let index: soroban_sdk::Vec<crate::types::RoyaltyClaimRef> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    if index.len() > 0 {
+        bump_entry_ttl(env, &key);
+    }
+    let mut out: soroban_sdk::Vec<crate::types::RoyaltyClaimRecord> =
+        soroban_sdk::Vec::new(env);
+    let end = core::cmp::min(start.saturating_add(limit), index.len());
+    let mut i = start;
+    while i < end {
+        if let Some(r) = index.get(i) {
+            if let Some(claim) = get_royalty_claim(env, r.settlement_id, r.is_listing, recipient) {
+                if !claim.claimed {
+                    out.push_back(claim);
+                }
+            }
+        }
+        i = i.saturating_add(1);
+    }
+    out
 }
 
 // ── Counter-offer link storage (Issue #471) ──────────────────────────────────

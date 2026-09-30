@@ -1,7 +1,7 @@
 {
-  "title": "Reentrancy Guard Triggered — High Rate",
-  "description": "Fires when the elcarehub_reentrancy_guard_triggered_total counter increases by more than 3 in any 5-minute window. This indicates repeated ReentrancyGuard (error #22) rejections on the marketplace contract, which may signal a probing or exploitation attempt. Also monitor CleanupSummaryEvent with kind=lock_cleanup via elcarehub_cleanup_summary_total{kind=\"lock_cleanup\"} (schema: kind Symbol, items_processed u32, ledger_sequence u32) for cleanup_expired_locks progress.",
-  "uid": "elcarehub-reentrancy-guard-alert",
+  "title": "TTL Sweep Staleness — No ttl_extend CleanupSummary in 72h",
+  "description": "Fires when no CleanupSummaryEvent with kind=ttl_extend has been observed for the marketplace contract in the preceding 72 hours. extend_active_ttls must run at least every ~10 days (LEDGER_TTL_THRESHOLD); 72h is an early warning. See docs/guides/storage-retention.md and Issue #847.",
+  "uid": "elcarehub-ttl-sweep-staleness",
   "orgId": 1,
   "condition": "C",
   "data": [
@@ -9,12 +9,12 @@
       "refId": "A",
       "queryType": "",
       "relativeTimeRange": {
-        "from": 300,
+        "from": 259200,
         "to": 0
       },
       "datasourceUid": "${datasource}",
       "model": {
-        "expr": "increase(elcarehub_reentrancy_guard_triggered_total[5m])",
+        "expr": "increase(elcarehub_cleanup_summary_total{kind=\"ttl_extend\"}[72h])",
         "intervalMs": 1000,
         "maxDataPoints": 43200,
         "refId": "A"
@@ -24,7 +24,7 @@
       "refId": "B",
       "queryType": "",
       "relativeTimeRange": {
-        "from": 300,
+        "from": 259200,
         "to": 0
       },
       "datasourceUid": "__expr__",
@@ -62,7 +62,7 @@
       "refId": "C",
       "queryType": "",
       "relativeTimeRange": {
-        "from": 300,
+        "from": 259200,
         "to": 0
       },
       "datasourceUid": "__expr__",
@@ -70,8 +70,8 @@
         "conditions": [
           {
             "evaluator": {
-              "params": [3],
-              "type": "gt"
+              "params": [0],
+              "type": "lte"
             },
             "operator": {
               "type": "and"
@@ -96,17 +96,17 @@
       }
     }
   ],
-  "noDataState": "OK",
+  "noDataState": "Alerting",
   "execErrState": "Error",
-  "for": "0s",
+  "for": "1h",
   "labels": {
     "severity": "warning",
     "team": "elcarehub-platform"
   },
   "annotations": {
-    "summary": "Reentrancy guard triggered {{ $values.B.Value | printf \"%.0f\" }} times in the last 5 minutes",
-    "description": "The marketplace contract is returning ReentrancyGuard (error #22) at an elevated rate. Check for bot probing, recursive call exploits, or a stuck lock. For lock cleanup ops watch elcarehub_cleanup_summary_total{kind=\"lock_cleanup\"}. Runbook: https://github.com/Hydrax117/elcare-care-app/blob/main/docs/INCIDENT_RUNBOOK.md",
-    "runbook_url": "https://github.com/Hydrax117/elcare-care-app/blob/main/docs/INCIDENT_RUNBOOK.md"
+    "summary": "No ttl_extend CleanupSummaryEvent in the last 72 hours — TTL keeper may be stalled",
+    "description": "Marketplace persistent listings/auctions rely on extend_active_ttls refreshing TTLs before LEDGER_TTL_THRESHOLD (~10 days). Run scripts/ttl-keeper.ts manually for an emergency sweep. Runbook: docs/guides/storage-retention.md",
+    "runbook_url": "https://github.com/Elcare-care/elcare-care-app/blob/main/docs/guides/storage-retention.md"
   },
   "isPaused": false
 }

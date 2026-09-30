@@ -1,7 +1,7 @@
 {
-  "title": "Reentrancy Guard Triggered — High Rate",
-  "description": "Fires when the elcarehub_reentrancy_guard_triggered_total counter increases by more than 3 in any 5-minute window. This indicates repeated ReentrancyGuard (error #22) rejections on the marketplace contract, which may signal a probing or exploitation attempt. Also monitor CleanupSummaryEvent with kind=lock_cleanup via elcarehub_cleanup_summary_total{kind=\"lock_cleanup\"} (schema: kind Symbol, items_processed u32, ledger_sequence u32) for cleanup_expired_locks progress.",
-  "uid": "elcarehub-reentrancy-guard-alert",
+  "title": "TTL Anomaly Detected — ActiveListings / Auction Index Drift",
+  "description": "Fires whenever a TtlAnomalyEvent is emitted by extend_active_ttls. This indicates an ActiveListings index entry (or auction id) whose stored record is missing or no longer Active — unexpected state that operators should investigate. Issue #847.",
+  "uid": "elcarehub-ttl-anomaly-detected",
   "orgId": 1,
   "condition": "C",
   "data": [
@@ -14,7 +14,7 @@
       },
       "datasourceUid": "${datasource}",
       "model": {
-        "expr": "increase(elcarehub_reentrancy_guard_triggered_total[5m])",
+        "expr": "increase(elcarehub_ttl_anomaly_total[5m])",
         "intervalMs": 1000,
         "maxDataPoints": 43200,
         "refId": "A"
@@ -70,7 +70,7 @@
         "conditions": [
           {
             "evaluator": {
-              "params": [3],
+              "params": [0],
               "type": "gt"
             },
             "operator": {
@@ -104,9 +104,9 @@
     "team": "elcarehub-platform"
   },
   "annotations": {
-    "summary": "Reentrancy guard triggered {{ $values.B.Value | printf \"%.0f\" }} times in the last 5 minutes",
-    "description": "The marketplace contract is returning ReentrancyGuard (error #22) at an elevated rate. Check for bot probing, recursive call exploits, or a stuck lock. For lock cleanup ops watch elcarehub_cleanup_summary_total{kind=\"lock_cleanup\"}. Runbook: https://github.com/Hydrax117/elcare-care-app/blob/main/docs/INCIDENT_RUNBOOK.md",
-    "runbook_url": "https://github.com/Hydrax117/elcare-care-app/blob/main/docs/INCIDENT_RUNBOOK.md"
+    "summary": "TtlAnomalyEvent fired {{ $values.B.Value | printf \"%.0f\" }} time(s) in the last 5 minutes",
+    "description": "extend_active_ttls found an ActiveListings/auction id in an unexpected state. Inspect recent ttl_anomaly events (subject=listing|auction). Runbook: docs/guides/storage-retention.md",
+    "runbook_url": "https://github.com/Elcare-care/elcare-care-app/blob/main/docs/guides/storage-retention.md"
   },
   "isPaused": false
 }

@@ -3200,10 +3200,14 @@ impl MarketplaceContract {
     }
 
     // ── admin_cancel_auction ─────────────────────────────────
-    // Admin emergency cancellation — works even if bids exist.
-    // Refunds the highest bidder before cancelling. (Issue #271)
+    // Admin / emergency cancellation — works even if bids exist.
+    // Refunds the highest bidder before cancelling. (Issue #271 / #848)
+    //
+    // Reason selection:
+    //   - ProtocolConfig holder → AuctionCancelReason::Admin
+    //   - EmergencyPause-only holder → AuctionCancelReason::Emergency
     pub fn admin_cancel_auction(env: Env, admin: Address, auction_id: u64) {
-        Self::require_role(&env, &admin, RoleType::EmergencyPause);
+        let reason = Self::resolve_auction_cancel_reason(&env, &admin);
         if !acquire_auction_lock(&env, auction_id) {
             panic_with_error!(&env, MarketplaceError::ReentrancyGuard);
         }
@@ -3240,7 +3244,7 @@ impl MarketplaceContract {
         AuctionCancelledEvent {
             auction_id,
             cancelled_by: admin.clone(),
-            reason: AuctionCancelReason::Admin,
+            reason,
             escrow_amount: refunded_amount,
             token: auction.token.clone(),
             ledger_sequence: env.ledger().sequence(),
@@ -3281,6 +3285,8 @@ impl MarketplaceContract {
     /// - `AuctionNotActive`    — auction is not Active.
     /// - `AuctionHasBids`      — at least one bid has already been placed.
     /// - `InvalidPrice`        — `new_price` is below `min_bid_increment`.
+    /// - `PriceOutOfBounds`    — `new_price` violates configured [min, max] bounds (#848).
+    /// - `ReentrancyGuard`     — auction lock already held.
     pub fn update_auction_reserve_price(
         env: Env,
         creator: Address,
@@ -3289,28 +3295,43 @@ impl MarketplaceContract {
     ) {
         bump_instance_ttl(&env);
         creator.require_auth();
-        let mut auction = load_auction(&env, auction_id)
-            .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::AuctionNotFound));
+        if !acquire_auction_lock(&env, auction_id) {
+            panic_with_error!(&env, MarketplaceError::ReentrancyGuard);
+        }
+        let mut auction = match load_auction(&env, auction_id) {
+            Some(a) => a,
+            None => {
+                release_auction_lock(&env, auction_id);
+                panic_with_error!(&env, MarketplaceError::AuctionNotFound);
+            }
+        };
 
         if auction.creator != creator {
+            release_auction_lock(&env, auction_id);
             panic_with_error!(&env, MarketplaceError::Unauthorized);
         }
         if auction.status != AuctionStatus::Active {
+            release_auction_lock(&env, auction_id);
             panic_with_error!(&env, MarketplaceError::AuctionNotActive);
         }
         // Lock out updates once any bid exists.
         if auction.highest_bidder.is_some() || auction.highest_bid > 0 {
+            release_auction_lock(&env, auction_id);
             panic_with_error!(&env, MarketplaceError::AuctionHasBids);
         }
         let min_increment = crate::storage::get_min_bid_increment_storage(&env)
             .unwrap_or(DEFAULT_MIN_BID_INCREMENT);
         if new_price < min_increment {
+            release_auction_lock(&env, auction_id);
             panic_with_error!(&env, MarketplaceError::InvalidPrice);
         }
+        // Enforce global price-policy bounds (Issue #848).
+        assert_price_policy(&env, new_price);
 
         let old_price = auction.reserve_price;
         auction.reserve_price = new_price;
         save_auction(&env, &auction);
+        release_auction_lock(&env, auction_id);
 
         crate::events::emit_auction_reserve_updated(
             &env, auction_id, creator, old_price, new_price,
@@ -4548,6 +4569,31 @@ impl MarketplaceContract {
         caller.require_auth();
     }
 
+    /// Resolve the typed cancel reason for `admin_cancel_auction` (Issue #848).
+    ///
+    /// ProtocolConfig takes precedence (Admin reason). EmergencyPause-only
+    /// callers receive Emergency. Callers with neither role are rejected.
+    fn resolve_auction_cancel_reason(env: &Env, caller: &Address) -> AuctionCancelReason {
+        let admin_fallback = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Admin)
+            .expect("admin not set");
+        let protocol = crate::storage::get_role_storage(env, &RoleType::ProtocolConfig)
+            .unwrap_or_else(|| admin_fallback.clone());
+        let emergency = crate::storage::get_role_storage(env, &RoleType::EmergencyPause)
+            .unwrap_or_else(|| admin_fallback);
+        if *caller == protocol {
+            caller.require_auth();
+            return AuctionCancelReason::Admin;
+        }
+        if *caller == emergency {
+            caller.require_auth();
+            return AuctionCancelReason::Emergency;
+        }
+        panic_with_error!(env, MarketplaceError::Unauthorized);
+    }
+
     /// Like `require_role` but resolves the current invoker from `env` rather
     /// than accepting an explicit `caller` argument.  Used in entry points where
     /// there is no dedicated `admin: Address` parameter (e.g. `revoke_artist`,
@@ -4922,6 +4968,19 @@ impl MarketplaceContract {
             claim.amount,
         );
         true
+    }
+
+    /// Paginate unclaimed royalty records for a recipient (Issue #842).
+    ///
+    /// Walks the recipient claim index from `start` for up to `limit` entries
+    /// and returns only those with `claimed == false`.
+    pub fn get_unclaimed_royalties(
+        env: Env,
+        recipient: Address,
+        start: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<crate::types::RoyaltyClaimRecord> {
+        crate::storage::get_unclaimed_royalties(&env, &recipient, start, limit)
     }
 
     // ── Collection compatibility (Issue #458) ─────────────────────────────────

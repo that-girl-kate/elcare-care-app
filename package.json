@@ -2,7 +2,7 @@
   "name": "elcarehub",
   "version": "1.0.0",
   "private": true,
-  "description": "ElcareHub — Decentralized African art marketplace on Stellar + Soroban",
+  "description": "ElcareHub \u2014 Decentralized African art marketplace on Stellar + Soroban",
   "scripts": {
     "dev:frontend": "npm run dev --prefix frontend/elcarehub-app",
     "dev:indexer": "npm run dev --prefix indexer",
@@ -22,7 +22,8 @@
     "live-e2e:test": "bash -c 'set -a; source scripts/live-e2e/.env.live-e2e; set +a; npm run test:e2e:live --prefix frontend/elcarehub-app'",
     "lint:frontend": "npm run lint --prefix frontend/elcarehub-app",
     "lint:indexer": "npm run lint --prefix indexer",
-    "install:all": "npm ci"
+    "install:all": "npm ci",
+    "ttl:keeper": "tsx scripts/ttl-keeper.ts"
   },
   "workspaces": [
     "packages/config",

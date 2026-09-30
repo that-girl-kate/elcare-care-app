@@ -35,7 +35,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short,
-    token::Client as TokenClient, xdr::ToXdr, Address, Bytes, BytesN, Env, Map, String, Vec,
+    token::Client as TokenClient, xdr::ToXdr, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 
 /// Shared metadata validation rules (Issue #476).
@@ -938,6 +938,11 @@ impl LazyMint721 {
                 .get(&DataKey::RoyaltyBps)
                 .unwrap_or(0),
         )
+    }
+
+    /// Marketplace compatibility tag (Issue #841). Must match Symbol `"LazyMint721"`.
+    pub fn contract_type(env: Env) -> Symbol {
+        Symbol::new(&env, "LazyMint721")
     }
 
     pub fn platform_fee_info(env: Env) -> (Address, u32) {

@@ -139,3 +139,63 @@ not a live contract read. The indexer should continue to persist every
 / `auction_resolved` / `offer_*` event exactly as it does today; nothing
 about this change affects the event stream itself, only how long the
 contract's own copy of the underlying record stays "hot".
+
+---
+
+## 6. TTL keeper operation (Issue #847)
+
+Soroban persistent entries expire unless refreshed. The marketplace exposes
+`extend_active_ttls(admin, max_items)` (ProtocolConfig role) which walks the
+`ActiveListings` index and auction id space, bumping TTLs and emitting:
+
+| Event | Meaning |
+|---|---|
+| `cleanup_summary` with `kind = ttl_extend` | One sweep call finished; `items_processed` is the count refreshed |
+| `ttl_anomaly` | Index/state drift (active index points at a missing/non-Active record) |
+
+### Recommended schedule
+
+Call the keeper at least daily (far inside the ~10-day `LEDGER_TTL_THRESHOLD`
+window). A practical cron:
+
+```cron
+0 */12 * * * cd /opt/elcare && RPC_URL=... CONTRACT_ID=... KEEPER_PRIVATE_KEY=... npx tsx scripts/ttl-keeper.ts
+```
+
+Or via npm: `npm run ttl:keeper` (same env vars required).
+
+### Manual / emergency sweep
+
+```bash
+export RPC_URL=https://soroban-testnet.stellar.org
+export CONTRACT_ID=C...
+export KEEPER_PRIVATE_KEY=S...
+export MAX_ITEMS_PER_CALL=200   # contract hard-caps at 100 per call
+npx tsx scripts/ttl-keeper.ts
+```
+
+The script loops until `TtlSweepProgress` wraps to phase 0 / cursor 0.
+If a call processes zero items while the cursor has not wrapped, it backs off
+30 seconds and retries.
+
+### Grafana alerts
+
+| Alert file | Condition |
+|---|---|
+| `.github/grafana-alerts/ttl-sweep-staleness.json` | No `cleanup_summary{kind="ttl_extend"}` in 72h |
+| `.github/grafana-alerts/ttl-anomaly-detected.json` | Any `ttl_anomaly` in 5m |
+
+Indexer counters: `elcarehub_cleanup_summary_total{kind}` and
+`elcarehub_ttl_anomaly_total{subject}`.
+
+### Restoring an archived record
+
+If a listing/auction TTL lapses, Soroban archives the entry. To recover:
+
+1. Identify the contract data key (e.g. `DataKey::Listing(id)` / `DataKey::Auction(id)`).
+2. Use the Stellar CLI / RPC `restore` footprint for that ledger key so the entry
+   becomes live again (pay the restore fee).
+3. Immediately run `scripts/ttl-keeper.ts` (or call `extend_active_ttls` /
+   `renew_storage`) so the restored entry is re-bumped before the next archival.
+4. Prefer the indexer's DB for historical reads of terminal records; on-chain
+   restore is for Active records that were unexpectedly archived.

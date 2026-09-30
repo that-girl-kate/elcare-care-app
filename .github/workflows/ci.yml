@@ -13,6 +13,11 @@ jobs:
       - run: cargo check --target wasm32-unknown-unknown
       - run: cargo build --target wasm32v1-none --release -p collection-nft-erc721 -p collection-nft-erc1155 -p lazy-mint-erc721 -p lazy-mint-erc1155
       - run: cargo test --workspace
+      # Issue #841 — collection conformance suite is a required merge gate.
+      # Do not remove or #[ignore] tests in contracts/e2e-conformance without
+      # an accompanying justification comment in the same PR.
+      - name: Collection conformance suite
+        run: cargo test -p e2e-conformance
 
   # ── Contract error catalog coverage gate (Issue #475) ────────────────────────
   # Fails when a Rust error variant has no client-side catalog mapping, when a
@@ -75,4 +80,3 @@ jobs:
         run: |
           bash scripts/migrations/lint-migration.sh \
             indexer/prisma/migrations/20260827000000_example_expand_contract/migration.sql
-

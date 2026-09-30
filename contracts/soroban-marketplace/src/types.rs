@@ -246,6 +246,14 @@ pub struct RoyaltyClaimRecord {
     pub claimed_at: Option<u32>,
 }
 
+/// Lightweight index entry for recipient-scoped royalty claim pagination (Issue #842).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoyaltyClaimRef {
+    pub settlement_id: u64,
+    pub is_listing: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ListingStatus {

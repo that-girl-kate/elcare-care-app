@@ -399,6 +399,20 @@ export const elcarehubEntriesNearExpiry = new client.Gauge({
   help: 'Number of listings, auctions, and offers within 50,000 ledgers of their TTL expiry',
 });
 
+/** CleanupSummaryEvent counts by kind (ttl_extend | lock_cleanup | storage_renewal) — Issue #847. */
+export const elcarehubCleanupSummaryTotal = new client.Counter({
+  name: 'elcarehub_cleanup_summary_total',
+  help: 'CleanupSummaryEvent emissions from marketplace maintenance entry points, by kind',
+  labelNames: ['kind'],
+});
+
+/** TtlAnomalyEvent counts — ActiveListings / auction index drift (Issue #847). */
+export const elcarehubTtlAnomalyTotal = new client.Counter({
+  name: 'elcarehub_ttl_anomaly_total',
+  help: 'TtlAnomalyEvent emissions from extend_active_ttls when index/state drift is detected',
+  labelNames: ['subject'],
+});
+
 // ── Backfill / gap-repair metrics ─────────────────────────────────────────────
 
 /** Number of Open LedgerGap rows currently in the DB (set each gap-repair cycle). */

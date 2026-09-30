@@ -192,3 +192,67 @@ fn test_royalty_claim_amount_matches_transfer() {
     assert_eq!(artist_after - artist_before, claim.amount);
     assert_eq!(claim.amount, price); // sole 100% recipient
 }
+
+// ── Issue #842: manual pull of an unclaimed record + pagination ───────────────
+
+#[test]
+fn test_claim_royalty_manual_pull_succeeds() {
+    let (env, client, artist, _buyer, token, contract_id, _col) = setup();
+    let settlement_id = 42u64;
+    let amount = 1_500_000_i128;
+
+    // Seed an unclaimed record as if a direct transfer had failed mid-settlement.
+    env.as_contract(&contract_id, || {
+        let claim = crate::types::RoyaltyClaimRecord {
+            settlement_id,
+            is_listing: true,
+            recipient: artist.clone(),
+            token: token.clone(),
+            amount,
+            claimed: false,
+            created_at: env.ledger().sequence(),
+            claimed_at: None,
+        };
+        crate::storage::set_royalty_claim(&env, settlement_id, true, &artist, &claim);
+    });
+
+    let before = TokenClient::new(&env, &token).balance(&artist);
+    assert!(client.claim_royalty(&artist, &settlement_id, &true));
+    let after = TokenClient::new(&env, &token).balance(&artist);
+    assert_eq!(after - before, amount);
+
+    let record = client.get_royalty_claim(&settlement_id, &true, &artist).unwrap();
+    assert!(record.claimed);
+    assert!(record.claimed_at.is_some());
+}
+
+#[test]
+fn test_get_unclaimed_royalties_pagination() {
+    let (env, client, artist, _buyer, token, contract_id, _col) = setup();
+
+    env.as_contract(&contract_id, || {
+        for sid in 1u64..=5 {
+            let claim = crate::types::RoyaltyClaimRecord {
+                settlement_id: sid,
+                is_listing: true,
+                recipient: artist.clone(),
+                token: token.clone(),
+                amount: 100_000 * sid as i128,
+                claimed: sid <= 2, // first two already claimed
+                created_at: env.ledger().sequence(),
+                claimed_at: if sid <= 2 { Some(env.ledger().sequence()) } else { None },
+            };
+            crate::storage::set_royalty_claim(&env, sid, true, &artist, &claim);
+        }
+    });
+
+    let page = client.get_unclaimed_royalties(&artist, &0u32, &10u32);
+    assert_eq!(page.len(), 3, "settlements 3,4,5 remain unclaimed");
+    assert_eq!(page.get(0).unwrap().settlement_id, 3);
+    assert_eq!(page.get(2).unwrap().settlement_id, 5);
+
+    let page2 = client.get_unclaimed_royalties(&artist, &3u32, &2u32);
+    // start=3 skips first three index entries (sids 1,2,3); remaining unclaimed in window: 4,5
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap().settlement_id, 4);
+}

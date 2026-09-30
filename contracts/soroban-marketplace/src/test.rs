@@ -5529,6 +5529,147 @@ fn test_normal_extension_within_duration_cap() {
     );
 }
 
+// ── Issue #848 named anti-sniping / reserve-price tests ──────────────────────
+
+fn decode_bid_placed_effective_end(env: &Env) -> Option<u64> {
+    use soroban_sdk::{
+        xdr::{ContractEventBody, ScVal},
+        FromVal, TryFromVal,
+    };
+    use crate::events::BidPlacedEvent;
+    env.events().all().events().iter().rev().find_map(|e| {
+        if let ContractEventBody::V0(body) = &e.body {
+            let matches = body.topics.iter().any(|t| match t {
+                ScVal::Symbol(s) => {
+                    core::str::from_utf8(s.0.as_slice()).unwrap_or("") == "bid_placed"
+                }
+                _ => false,
+            });
+            if matches {
+                let val = soroban_sdk::Val::from_val(env, &body.data);
+                BidPlacedEvent::try_from_val(env, &val)
+                    .ok()
+                    .map(|ev| ev.effective_end_time)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
+#[test]
+fn test_anti_sniping_extension_applied() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&artist, &token_id);
+
+    let duration = 3600u64;
+    let trigger = 300u64;
+    let window = 600u64;
+    let auction_id = create_auction_with_extension(
+        &env, &client, &artist, &artist, &token_id, &collection_id, duration, window, trigger,
+    );
+    let start = env.ledger().timestamp();
+    env.ledger().set_timestamp(start + 3400); // 200s remaining < trigger
+
+    client.place_bid(&buyer, &auction_id, &1_500_000_i128);
+    // Capture before any follow-up invoke — events().all() is last-invocation only.
+    let effective = decode_bid_placed_effective_end(&env)
+        .expect("BidPlacedEvent must be emitted");
+    let after = client.get_auction(&auction_id);
+    let now = env.ledger().timestamp();
+    assert_eq!(after.end_time, now + window);
+    assert_eq!(effective, after.end_time, "effective_end_time must match new end_time");
+}
+
+#[test]
+fn test_anti_sniping_no_extension_outside_trigger() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&artist, &token_id);
+
+    let duration = 3600u64;
+    let auction_id = create_auction_with_extension(
+        &env, &client, &artist, &artist, &token_id, &collection_id, duration, 600u64, 300u64,
+    );
+    let start = env.ledger().timestamp();
+    env.ledger().set_timestamp(start + 1000); // well outside trigger
+    let original_end = client.get_auction(&auction_id).end_time;
+
+    client.place_bid(&buyer, &auction_id, &1_500_000_i128);
+    let effective = decode_bid_placed_effective_end(&env)
+        .expect("BidPlacedEvent must be emitted");
+    let after = client.get_auction(&auction_id);
+    assert_eq!(after.end_time, original_end);
+    assert_eq!(effective, original_end, "effective_end_time must equal original end_time");
+}
+
+#[test]
+fn test_anti_sniping_max_extensions_cap() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&artist, &token_id);
+    client.set_auction_extension_window(&artist, &600u64);
+    client.set_auction_extension_trigger(&artist, &300u64);
+    client.set_auction_max_extensions(&artist, &1u32);
+
+    let duration = 7_200u64;
+    let start = env.ledger().timestamp();
+    let auction_id = client.create_auction(
+        &artist, &token_id, &collection_id, &1u64, &1_000_000_i128, &duration,
+        &valid_recipients(&env, &artist),
+    );
+
+    // First bid inside trigger → extension applied (count=1)
+    env.ledger().set_timestamp(start + duration - 100);
+    client.place_bid(&buyer, &auction_id, &1_500_000_i128);
+    assert_eq!(client.get_auction(&auction_id).extension_count, 1);
+
+    // Second bid inside trigger → bid accepted, no further extension (cap signaled by no extend)
+    let end_at_cap = client.get_auction(&auction_id).end_time;
+    env.ledger().set_timestamp(end_at_cap - 100);
+    let bidder2 = Address::generate(&env);
+    let sac = StellarAssetClient::new(&env, &token_id);
+    sac.mint(&bidder2, &100_000_000_000_i128);
+    client.place_bid(&bidder2, &auction_id, &3_000_000_i128);
+    let after = client.get_auction(&auction_id);
+    assert_eq!(after.end_time, end_at_cap, "cap must block further extension");
+    assert_eq!(after.extension_count, 1);
+    assert_eq!(after.highest_bidder, Some(bidder2));
+}
+
+#[test]
+fn test_update_reserve_price_with_existing_bid_rejected() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&artist, &token_id);
+    let auction_id = client.create_auction(
+        &artist, &token_id, &collection_id, &1u64, &1_000_000_i128, &3_700u64,
+        &valid_recipients(&env, &artist),
+    );
+    client.place_bid(&buyer, &auction_id, &1_500_000_i128);
+    let result = client.try_update_auction_reserve_price(&artist, &auction_id, &2_000_000_i128);
+    assert!(result.is_err(), "reserve update must fail after a bid exists");
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #39)")]
+fn test_update_reserve_price_price_out_of_bounds() {
+    let (env, client, artist, _buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&artist, &token_id);
+    // Configure global bounds so a low reserve violates PriceOutOfBounds (#39).
+    client.set_price_bounds(&artist, &5_000_000_i128, &100_000_000_i128);
+    let auction_id = client.create_auction(
+        &artist, &token_id, &collection_id, &1u64, &10_000_000_i128, &3_700u64,
+        &valid_recipients(&env, &artist),
+    );
+    // Below min_price → PriceOutOfBounds
+    client.update_auction_reserve_price(&artist, &auction_id, &1_000_000_i128);
+}
+
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Cancel Auction (Feature B)
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•

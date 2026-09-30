@@ -19,7 +19,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, String,
-    Vec,
+    Symbol, Vec,
 };
 
 /// Shared metadata validation rules (Issue #476).
@@ -227,6 +227,12 @@ impl NormalNFT721 {
             .instance()
             .get(&DataKey::NextTokenId)
             .unwrap_or(0)
+    }
+
+    /// Marketplace compatibility tag (Issue #841). Must match
+    /// `CollectionStandard::Erc721` / Symbol `"ERC721"`.
+    pub fn contract_type(env: Env) -> Symbol {
+        Symbol::new(&env, "ERC721")
     }
 
     // ── Minting ───────────────────────────────────────────────────────────

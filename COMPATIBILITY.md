@@ -72,7 +72,7 @@ When releasing a new version:
 
 ## Collection Contract Conformance Matrix
 
-*Updated by Issue #485 — Add collection contract compatibility conformance suite.*
+*Updated by Issue #841 — shared Rust e2e-conformance suite (extends indexer coverage from #485).*
 
 ### Collection Variants
 
@@ -93,16 +93,25 @@ When releasing a new version:
 | Lazy-mint voucher revocation (`revoke`) | — | — | ✓ | ✓ | Indexer, Frontend |
 | Deploy idempotency (`dep_idem`) | ✓ | ✓ | ✓ | ✓ | Launchpad, Indexer |
 | Marketplace listing / sale / offer events | ✓ | ✓ | ✓ | ✓ | Marketplace, Indexer, Frontend |
+| `contract_type()` Symbol tag | ✓ | ✓ | ✓ | ✓ | Marketplace quantity gate |
 
 **Legend:** ✓ = supported and conformance-tested; — = intentionally unsupported (documented).
 
 ### Conformance Test Location
 
-`indexer/tests/collection-conformance.test.ts` — runs as part of the standard CI test suite. The suite verifies deploy event schema, pause capability, lazy-mint capability (lazy variants only), and marketplace integration events for every variant. Unsupported capabilities are documented with explicit `expect(variant.supportsLazyMint).toBe(false)` assertions that would fail if a standard variant started emitting lazy-mint events unexpectedly.
+The capability matrix above is **enforced by the Rust conformance suite** at
+[`contracts/e2e-conformance/tests/`](contracts/e2e-conformance/tests/). CI runs
+`cargo test -p e2e-conformance` as a required step (see `.github/workflows/ci.yml`).
+Each collection is deployed via the Launchpad factory (not direct `env.register`)
+and exercised through `CollectionConformance` helpers in
+[`contracts/e2e-conformance/src/lib.rs`](contracts/e2e-conformance/src/lib.rs).
+
+Schema-level indexer coverage remains at
+`indexer/tests/collection-conformance.test.ts` for deploy/pause event shapes.
 
 ### How to Update After a Contract Change
 
-1. Run `npm test -- collection-conformance` and check for failures.
-2. If a new capability is added to a variant, add it to the matrix above and write a new `it(...)` block in the test file.
-3. If a capability is removed, mark it `—` in the matrix and update the test to document the intentional removal.
+1. Build collection WASM, then run `cargo test -p e2e-conformance`.
+2. If a new capability is added to a variant, add it to the matrix above and extend the matching test file under `contracts/e2e-conformance/tests/`.
+3. If a capability is removed, mark it `—` in the matrix and update the suite (do not silently `#[ignore]` without a justification comment).
 4. Update the **Supported Combinations** table above with a new release row.

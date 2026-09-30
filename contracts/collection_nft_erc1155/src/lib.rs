@@ -23,7 +23,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
-    String, Vec,
+    String, Symbol, Vec,
 };
 
 /// Shared metadata validation rules (Issue #476).
@@ -1055,6 +1055,11 @@ impl NormalNFT1155 {
             .instance()
             .get(&DataKey::NextTokenId)
             .unwrap_or(0)
+    }
+
+    /// Marketplace compatibility tag (Issue #841). Must match Symbol `"ERC1155"`.
+    pub fn contract_type(env: Env) -> Symbol {
+        Symbol::new(&env, "ERC1155")
     }
 
     pub fn name(env: Env) -> String {

@@ -43,6 +43,28 @@ fn decode_auction_cancelled(env: &Env) -> Option<AuctionCancelledEvent> {
     })
 }
 
+fn decode_auction_cancelled_for(env: &Env, auction_id: u64) -> Option<AuctionCancelledEvent> {
+    use soroban_sdk::{xdr::{ContractEventBody, ScVal}, FromVal};
+    let mut found = None;
+    for e in env.events().all().events().iter() {
+        if let ContractEventBody::V0(body) = &e.body {
+            let matches = body.topics.iter().any(|t| match t {
+                ScVal::Symbol(s) => core::str::from_utf8(s.0.as_slice()).unwrap_or("") == AUCTION_CANCELLED,
+                _ => false,
+            });
+            if matches {
+                let val = soroban_sdk::Val::from_val(env, &body.data);
+                if let Ok(ev) = AuctionCancelledEvent::try_from_val(env, &val) {
+                    if ev.auction_id == auction_id {
+                        found = Some(ev);
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
 fn decode_admin_cancelled(env: &Env) -> Option<AuctionAdminCancelledEvent> {
     use soroban_sdk::{xdr::{ContractEventBody, ScVal}, FromVal};
     env.events().all().events().iter().find_map(|e| {
@@ -216,13 +238,59 @@ fn test_unauthorized_caller_cannot_admin_cancel() {
 #[should_panic(expected = "Error(Contract, #5)")]
 fn test_wrong_role_holder_cannot_admin_cancel() {
     let (env, client, admin, creator, _, payment_token, collection) = auction_setup();
-    // Transfer EmergencyPause away from admin to a dedicated holder.
+    // Transfer both gate roles away so the original admin cannot cancel.
+    let pause_holder = Address::generate(&env);
+    let protocol_holder = Address::generate(&env);
+    client.propose_role_transfer(&admin, &RoleType::EmergencyPause, &pause_holder);
+    client.accept_role_transfer(&RoleType::EmergencyPause, &pause_holder);
+    client.propose_role_transfer(&admin, &RoleType::ProtocolConfig, &protocol_holder);
+    client.accept_role_transfer(&RoleType::ProtocolConfig, &protocol_holder);
+    let auction_id = make_auction(&env, &client, &creator, &payment_token, &collection, 3_601);
+    // Admin holds neither ProtocolConfig nor EmergencyPause — must be rejected.
+    client.admin_cancel_auction(&admin, &auction_id);
+}
+
+// ── §5  Typed cancel reasons for all three paths (Issue #848) ─────────────────
+
+#[test]
+fn test_auction_cancel_reasons() {
+    let (env, client, admin, creator, bidder, payment_token, collection) = auction_setup();
+
+    // Path 1: Owner
+    let aid_owner = make_auction(&env, &client, &creator, &payment_token, &collection, 3_601);
+    client.cancel_auction(&creator, &aid_owner);
+    let owner_ev = decode_auction_cancelled_for(&env, aid_owner).expect("owner cancel event");
+    assert_eq!(owner_ev.reason, AuctionCancelReason::Owner);
+
+    // Path 2: Admin (ProtocolConfig). Transfer EmergencyPause away so reason is Admin.
     let pause_holder = Address::generate(&env);
     client.propose_role_transfer(&admin, &RoleType::EmergencyPause, &pause_holder);
     client.accept_role_transfer(&RoleType::EmergencyPause, &pause_holder);
-    let auction_id = make_auction(&env, &client, &creator, &payment_token, &collection, 3_601);
-    // Admin no longer holds EmergencyPause — must be rejected.
-    client.admin_cancel_auction(&admin, &auction_id);
+    MockNftClient::new(&env, &collection).set_owner(&2u64, &creator);
+    let aid_admin = client.create_auction(
+        &creator, &payment_token, &collection, &2u64, &1_000_000_i128, &3_601u64,
+        &vec![&env, crate::types::Recipient { address: creator.clone(), percentage: 10_000 }],
+    );
+    client.admin_cancel_auction(&admin, &aid_admin);
+    let admin_ev = decode_auction_cancelled_for(&env, aid_admin).expect("admin cancel event");
+    assert_eq!(admin_ev.reason, AuctionCancelReason::Admin);
+
+    // Path 3: Emergency (EmergencyPause-only).
+    let emergency = Address::generate(&env);
+    let protocol_holder = Address::generate(&env);
+    client.propose_role_transfer(&admin, &RoleType::ProtocolConfig, &protocol_holder);
+    client.accept_role_transfer(&RoleType::ProtocolConfig, &protocol_holder);
+    client.propose_role_transfer(&pause_holder, &RoleType::EmergencyPause, &emergency);
+    client.accept_role_transfer(&RoleType::EmergencyPause, &emergency);
+    MockNftClient::new(&env, &collection).set_owner(&3u64, &creator);
+    let aid_emerg = client.create_auction(
+        &creator, &payment_token, &collection, &3u64, &1_000_000_i128, &3_601u64,
+        &vec![&env, crate::types::Recipient { address: creator.clone(), percentage: 10_000 }],
+    );
+    client.place_bid(&bidder, &aid_emerg, &2_000_000_i128);
+    client.admin_cancel_auction(&emergency, &aid_emerg);
+    let emerg_ev = decode_auction_cancelled_for(&env, aid_emerg).expect("emergency cancel event");
+    assert_eq!(emerg_ev.reason, AuctionCancelReason::Emergency);
 }
 
 // ── §4  Creator cannot cancel with bids ──────────────────────────────────────
